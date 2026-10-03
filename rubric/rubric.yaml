@@ -1,0 +1,345 @@
+# Tokenomics scoring rubric
+#
+# Combines S1–S5 (see sources/README.md) into one framework that gives the
+# same answer every time. Every threshold is a PRIOR: a judgment written down
+# before checking it against outcomes. None is calibrated yet. See
+# rubric/README.md, "Calibration".
+#
+# Source references: "S5:Q29" means source S5, question 29. "added" means
+# none of S0–S5 covers it; the criterion is here because 2023–2026 market
+# structure (low float with high FDV, unlock overhang, admin-key risk) makes
+# it material.
+
+version: 0.1.0
+status: draft
+
+scoring:
+  criterion_range: [0.0, 1.0]
+  numeric: >-
+    Linear between `red` (score 0) and `good` (score 1), clamped outside that
+    range. `direction` says which way is better.
+  categorical: score from the `levels` map.
+  missing_data: >-
+    A criterion without data is left out of its dimension, and the remaining
+    weights are renormalized. Coverage = sum of the weights of criteria that
+    had data.
+  dimension_score: weighted mean of the criteria that had data.
+  total_score: 100 * sum(dim_weight * dim_score) / sum(dim_weight), over dimensions with coverage > 0.
+  min_total_coverage: 0.6  # weighted coverage below this → verdict INSUFFICIENT_DATA
+  gates: any gate that triggers → verdict FAIL, whatever the score.
+  verdict_bands: {strong: 70, adequate: 50}  # >=70 strong, >=50 adequate, else weak
+
+dimensions:
+  - id: utility
+    name: Utility and value accrual
+    weight: 0.25
+    criteria:
+      - id: U1
+        name: token_necessity
+        question: Could the protocol work without this token?
+        type: categorical
+        levels:
+          required_by_protocol: 1.0      # e.g. gas, or staking that secures the network
+          substitutable: 0.4             # needed by design, but a stablecoin or ETH could do the job
+          not_required: 0.0              # a governance or "points" token on a protocol that runs without it
+        weight: 0.35
+        sources: [S5:Q17, S1]
+        notes: >-
+          S1's checklist counts uses. This asks whether the demand can't be met
+          any other way, which matters more.
+
+      - id: U2
+        name: holder_value_yield
+        question: How much value goes back to holders from revenue, per year, as a share of market cap?
+        type: numeric
+        metric: (revenue_buybacks + revenue_burns + revenue_distributions)_annualized / circulating_market_cap
+        unit: ratio
+        direction: higher_better
+        thresholds: {good: 0.05, red: 0.0}
+        weight: 0.35
+        data: [protocol revenue (e.g. DefiLlama fees/revenue), treasury and buyback disclosures]
+        sources: [S5:Q48-50, S5:Q63, S3]
+        notes: Leave out anything paid from emissions; U3 covers that.
+
+      - id: U3
+        name: real_yield_share
+        question: Are payouts to holders funded by revenue (redistribution) or by new tokens (dilution)?
+        type: numeric
+        metric: revenue_funded_distributions / (revenue_funded_distributions + emission_funded_distributions)
+        unit: ratio
+        direction: higher_better
+        thresholds: {good: 0.8, red: 0.2}
+        weight: 0.15
+        sources: [S5:Q39, S5:Q64]
+
+      - id: U4
+        name: utility_role_breadth
+        question: How many of Mougayar's six roles does the token actually perform (not just promise)?
+        type: numeric
+        metric: count of live roles in {right, value_exchange, toll, function, currency, earnings}
+        unit: count
+        direction: higher_better
+        thresholds: {good: 3, red: 1}
+        weight: 0.15
+        sources: [S1]
+        notes: >-
+          Tops out at 3. Being used in many ways is weak evidence of real
+          demand, so this has a low weight.
+
+  - id: supply
+    name: Supply and emissions
+    weight: 0.20
+    criteria:
+      - id: S1
+        name: float_ratio
+        question: What share of the eventual supply is circulating now?
+        type: numeric
+        metric: circulating_supply / max_supply  # use total_supply when uncapped
+        unit: ratio
+        direction: higher_better
+        thresholds: {good: 0.6, red: 0.2}
+        weight: 0.4
+        sources: [S5:Q2-3, S5:Q23-25, added]
+        notes: >-
+          Equals 1 / (FDV / market cap). Low float with high FDV is the
+          dominant post-2023 pattern. S2–S4 don't mention it.
+
+      - id: S2
+        name: net_issuance_12m
+        question: Over the next 12 months, how much does supply grow from minting after burns?
+        type: numeric
+        metric: (forward_12m_mint - forward_12m_burn) / total_supply
+        unit: ratio
+        direction: lower_better
+        thresholds: {good: 0.02, red: 0.15}
+        weight: 0.4
+        sources: [S3, S5:Q27, S5:Q35]
+        notes: Scheduled unlocks of tokens already minted are scored under `unlocks`, not here.
+
+      - id: S3
+        name: emission_sell_through
+        question: Do the people who receive emissions sell them straight away?
+        type: numeric
+        metric: share of emissions moved to exchanges or sold within 30 days of receipt
+        unit: ratio
+        direction: lower_better
+        thresholds: {good: 0.3, red: 0.8}
+        weight: 0.2
+        data: [on-chain flow analysis; often unavailable, so usually counts as missing]
+        sources: [S5:Q36-37]
+
+  - id: unlocks
+    name: Unlocks and vesting
+    weight: 0.20
+    criteria:
+      - id: V1
+        name: unlock_overhang_90d
+        question: How much supply unlocks in the next 90 days, relative to what circulates now?
+        type: numeric
+        metric: tokens_unlocking_next_90d / circulating_supply
+        unit: ratio
+        direction: lower_better
+        thresholds: {good: 0.02, red: 0.10}
+        weight: 0.4
+        sources: [S5:Q31, S5:Q41-42, S4, added]
+
+      - id: V2
+        name: max_single_unlock_12m
+        question: What is the biggest single unlock in the next 12 months?
+        type: numeric
+        metric: max(single_day_unlock) / circulating_supply_at_that_date
+        unit: ratio
+        direction: lower_better
+        thresholds: {good: 0.01, red: 0.05}
+        weight: 0.2
+        sources: [S2, added]
+        notes: Large one-day cliff unlocks are where sell pressure concentrates.
+
+      - id: V3
+        name: insider_tge_unlock
+        question: What share of the insider allocation was unlocked at TGE?
+        type: numeric
+        metric: insider_unlocked_at_tge / insider_allocation  # insider = team + investors + advisors
+        unit: ratio
+        direction: lower_better
+        thresholds: {good: 0.0, red: 0.15}
+        weight: 0.2
+        sources: [S2]
+
+      - id: V4
+        name: insider_vesting_duration
+        question: How many months from TGE until insiders are fully unlocked?
+        type: numeric
+        metric: cliff_months + linear_vesting_months  # use the shortest insider tranche
+        unit: months
+        direction: higher_better
+        thresholds: {good: 48, red: 12}
+        weight: 0.2
+        sources: [S2, S3]
+        notes: >-
+          Goes against S2, which calls 24 months "too long" for VCs. That's
+          the investor's interest. Holders are better off with longer vesting.
+          UNI's 4 years (S3) is the reference for "good".
+
+  - id: distribution
+    name: Distribution and concentration
+    weight: 0.15
+    criteria:
+      - id: D1
+        name: insider_allocation
+        question: What share of total supply went to the team, investors and advisors?
+        type: numeric
+        metric: (team + investors + advisors) / total_supply
+        unit: ratio
+        direction: lower_better
+        thresholds: {good: 0.30, red: 0.55}
+        weight: 0.4
+        sources: [S2, S3, S4, S5:Q28, S5:Q34]
+        notes: UNI is about 0.40 (S3), which scores 0.6.
+
+      - id: D2
+        name: private_to_public_ratio
+        question: How big is the private sale compared with the public allocation?
+        type: numeric
+        metric: (seed + private + strategic) / (public_sale + airdrop + liquidity_mining)
+        unit: ratio
+        direction: lower_better
+        thresholds: {good: 1.0, red: 5.0}
+        weight: 0.2
+        sources: [S2]
+        notes: S2's Case B is 19% private to 2% public, a ratio of 9.5, so it scores 0.
+
+      - id: D3
+        name: top10_holder_share_adjusted
+        question: How much of circulating supply do the 10 largest holders control?
+        type: numeric
+        metric: top10_balance / circulating_supply
+        unit: ratio
+        direction: lower_better
+        thresholds: {good: 0.20, red: 0.50}
+        weight: 0.4
+        data: [block explorer or Nansen/Arkham holder data, with labels]
+        sources: [S5:Q29-30, S4]
+        notes: >-
+          Leave out exchanges, bridges, staking contracts, vesting contracts
+          and the treasury before ranking holders. Raw top-10 figures are
+          dominated by these and tell you nothing.
+
+  - id: liquidity
+    name: Liquidity and market structure
+    weight: 0.10
+    criteria:
+      - id: L1
+        name: depth_2pct_to_mcap
+        question: Could holders sell without moving the price much?
+        type: numeric
+        metric: sum over the top venues of the ±2% order-book depth in USD / circulating_market_cap
+        unit: ratio
+        direction: higher_better
+        thresholds: {good: 0.005, red: 0.0005}
+        weight: 0.6
+        sources: [S5:Q9, S5:Q86-87]
+        notes: Treat these thresholds as the least certain in the rubric.
+
+      - id: L2
+        name: incentivized_liquidity_share
+        question: Is the DEX liquidity only there because it's paid for with emissions?
+        type: numeric
+        metric: incentivized_pool_tvl / total_dex_tvl_in_token_pairs
+        unit: ratio
+        direction: lower_better
+        thresholds: {good: 0.2, red: 0.8}
+        weight: 0.4
+        sources: [S5:Q15-16]
+
+  - id: governance_risk
+    name: Governance and control risk
+    weight: 0.10
+    criteria:
+      - id: G1
+        name: admin_controls
+        question: Who can upgrade the contracts or mint new tokens, and how fast?
+        type: categorical
+        levels:
+          immutable_or_dao_timelock: 1.0
+          multisig_with_timelock: 0.7
+          multisig_no_timelock: 0.3
+          single_key: 0.0
+        weight: 0.4
+        sources: [added]
+
+      - id: G2
+        name: audit_status
+        question: Are the audits real and current?
+        type: categorical
+        levels:
+          multiple_verified: 1.0
+          single_verified: 0.6
+          none: 0.0
+        weight: 0.3
+        sources: [S2]
+        notes: Check the audit on the auditor's own site. If it's claimed but can't be verified, GATE_AUDIT triggers.
+
+      - id: G3
+        name: vote_concentration
+        question: How concentrated is voting power in practice?
+        type: numeric
+        metric: share of votes cast by the top 10 voters across the last 10 proposals
+        unit: ratio
+        direction: lower_better
+        thresholds: {good: 0.3, red: 0.8}
+        weight: 0.3
+        sources: [S3, S5:Q66-69]
+        notes: Counts as missing data when the token has no governance role.
+
+gates:
+  - id: GATE_ALLOC
+    condition: allocation not disclosed, or allocations don't add up to 100% within ±0.5 percentage points
+    sources: [S2]
+    rationale: S2's own "good" example adds up to 120%. If the allocation isn't consistent, nothing that depends on it can be scored.
+  - id: GATE_WHALE
+    condition: one holder controls more than 20% of circulating supply, after the exclusions in D3
+    sources: [S4, S5:Q29]
+    rationale: One holder could crash the price on their own.
+  - id: GATE_MINT
+    condition: unlimited mint authority held by a single key, or by a multisig with no timelock
+    sources: [added]
+    rationale: Every supply metric is meaningless if supply can be inflated at will.
+  - id: GATE_AUDIT
+    condition: audit claimed but not listed by the named auditor
+    sources: [S2]
+    rationale: Misrepresenting an audit is a sign of fraud, not a weakness to average out.
+  - id: GATE_INSIDER_TGE
+    condition: insider_tge_unlock > 0.25
+    sources: [S2]
+    rationale: Insiders can exit at launch, so the vesting schedule doesn't protect anyone.
+
+# Recorded for context but deliberately left out of the score.
+informational:
+  - id: supply_cap_type
+    values: [hard_cap, disinflationary, uncapped_with_burn, uncapped]
+    reason: Sources disagree (S3 uses ETH and BTC as examples). Whether a cap matters depends on the design, and S1/S2 already capture what it affects.
+  - id: token_velocity
+    metric: transfer_volume / market_cap
+    sources: [S5:Q79]
+    reason: The direction isn't clear. High velocity can mean real use or wash trading.
+  - id: spot_turnover_30d
+    metric: avg_daily_volume / market_cap
+    reason: Both too low and too high are bad, so it doesn't fit a single direction.
+  - id: market_beta
+    sources: [S5:Q74]
+    reason: Belongs in risk sizing, not in judging tokenomics.
+  - id: consensus_mechanism
+    sources: [S4]
+    reason: Only matters through security spend, which supply/S2 and U1 already cover.
+  - id: security_likeness
+    sources: [S5:Q85]
+    reason: A legal judgment. Flag it for review; don't score it.
+
+excluded:
+  - item: Social and community "energy" (S5:Q51-56)
+    reason: Can't be measured consistently and is easy to manipulate.
+  - item: Mougayar 20-point checklist as a raw score (S1)
+    reason: Folded into U1 and U4. Counting yes answers rewards breadth over necessity.
+  - item: S4 valuation guidance
+    reason: Uses market cap only (no FDV) and contains factual errors. See sources/README.md.
